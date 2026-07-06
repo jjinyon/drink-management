@@ -1,0 +1,38 @@
+:root{
+  --paper-bg:#fff;
+  --accent:#2b2b2b;
+  --muted:#6b6b6b;
+  --danger:#c0392b;
+}
+*{box-sizing:border-box}
+body{font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans KR', 'Helvetica Neue', Arial; background:#f4f4f2; color:var(--accent); display:flex; align-items:center; justify-content:center; min-height:100vh; padding:20px}
+.receipt{width:min(720px,96%); background:linear-gradient(180deg,#fff,#fdfdfd); border:1px solid #e6e6e6; box-shadow:0 6px 18px rgba(0,0,0,0.06); padding:20px; border-radius:6px}
+.receipt-header{text-align:center; border-bottom:1px dashed #e6e6e6; padding-bottom:12px; margin-bottom:12px}
+.receipt-header h1{margin:0; font-size:1.6rem; letter-spacing:1px}
+.subtitle{margin:6px 0 0;color:var(--muted); font-size:0.95rem}
+.form{padding:8px 2px}
+.form-row{display:flex; flex-direction:column; margin:10px 0}
+.form-row.inline{flex-direction:row; gap:12px; align-items:center}
+label{font-weight:600; margin-bottom:6px}
+input[type=number], select{padding:10px; border:1px dashed #d6d6d6; border-radius:4px; font-size:1rem}
+.form-actions{display:flex; gap:8px; margin-top:12px}
+.btn{padding:10px 14px; border-radius:6px; border:1px solid #cfcfcf; background:white; cursor:pointer}
+.btn.primary{background:#111; color:white; border-color:#111}
+.error{color:var(--danger); font-size:0.9rem; margin-top:6px}
+.form-error{color:var(--danger); margin-top:6px}
+.result{margin-top:16px; padding-top:12px}
+.result-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px}
+.result-grid > div{background:linear-gradient(180deg,#fff,#fafafa); padding:10px; border-radius:4px; border:1px solid #eee}
+.guide{margin-top:12px}
+.guide ul{padding-left:18px}
+.safety{font-size:0.85rem; color:var(--muted); margin-top:10px}
+.caution{background:#fff6f6; border:1px solid #ffd6d6; color:var(--danger); padding:10px; margin-top:10px; border-radius:6px}
+
+@media (max-width:420px){
+  .receipt{padding:14px}
+  input[type=number], select{font-size:0.95rem}
+  .receipt-header h1{font-size:1.3rem}
+}
+
+/* highlight invalid inputs */
+.invalid{outline:2px solid rgba(192,57,43,0.12)}
