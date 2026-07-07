@@ -65,6 +65,18 @@ export function applyCalibration(predictedLevel: number, offset: number): number
   return clampLevel(predictedLevel + offset);
 }
 
+// 최근 피드백(실제 숙취 단계)이 "보통(3단계)"보다 높게 이어지면 권장 음주량을 줄이는 배율을 반환한다.
+// 음주를 늘리도록 유도하지는 않으므로 평균이 3 이하일 때는 항상 1(변화 없음)이다.
+export function getVolumeAdjustmentFactor(records: DrinkRecord[], windowSize = 5): number {
+  const rated = records.filter((r) => typeof r.actualLevel === 'number');
+  if (rated.length === 0) return 1;
+  const recent = rated.slice(-windowSize);
+  const avgActual = recent.reduce((acc, r) => acc + (r.actualLevel as number), 0) / recent.length;
+  if (avgActual <= 3) return 1;
+  const reduction = Math.min((avgActual - 3) * 0.15, 0.3);
+  return 1 - reduction;
+}
+
 export function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }

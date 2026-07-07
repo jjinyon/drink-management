@@ -83,6 +83,31 @@ export function clampLevel(level: number): number {
   return Math.min(5, Math.max(1, Math.round(level)));
 }
 
+// 각 숙취 단계에서 다음 단계로 넘어가기 직전까지의 BAC 상한 (classifyHangoverLevel의 역함수용)
+const LEVEL_BAC_CEILING: Record<number, number> = {
+  1: 0.029,
+  2: 0.059,
+  3: 0.099,
+  4: 0.149,
+  5: 0.25,
+};
+
+// 목표 숙취 단계를 넘지 않는 최대 음주량(ml)을 위드마크 공식 역산으로 계산한다.
+export function getRecommendedVolume(
+  weightKg: number,
+  sex: Sex,
+  percent: number,
+  targetLevel: number,
+  calibrationOffset: number = 0,
+): number {
+  const effectiveLevel = clampLevel(targetLevel - calibrationOffset);
+  const targetBac = LEVEL_BAC_CEILING[effectiveLevel];
+  const r = getDistributionRatio(sex);
+  const weightG = weightKg * 1000;
+  const alcGrams = (targetBac * weightG * r) / 100;
+  return alcGrams / ((percent / 100) * 0.789);
+}
+
 export type InputValues = {
   percent: number;
   volume: number;

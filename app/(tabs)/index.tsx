@@ -22,6 +22,7 @@ import {
   calculateEliminationTime,
   classifyHangoverLevel,
   getDistributionRatio,
+  getRecommendedVolume,
   getRecoveryGuide,
   validateInputs,
 } from '@/lib/hangover';
@@ -33,7 +34,10 @@ import {
   generateId,
   getCalibrationOffset,
   getRecords,
+  getVolumeAdjustmentFactor,
 } from '@/lib/records';
+
+const TARGET_LEVEL = 3;
 
 // ---------------------------------------------
 // UI 컴포넌트
@@ -67,18 +71,33 @@ export default function App() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [result, setResult] = useState<Result | null>(null);
   const [calibrationOffset, setCalibrationOffset] = useState(0);
+  const [volumeAdjustmentFactor, setVolumeAdjustmentFactor] = useState(1);
   const [pendingRecord, setPendingRecord] = useState<DrinkRecord | null>(null);
   const [saved, setSaved] = useState(false);
   const [profile, setProfile] = useState<UserProfile>(EMPTY_PROFILE);
 
   useFocusEffect(
     useCallback(() => {
-      getRecords().then((records) => setCalibrationOffset(getCalibrationOffset(records)));
+      getRecords().then((records) => {
+        setCalibrationOffset(getCalibrationOffset(records));
+        setVolumeAdjustmentFactor(getVolumeAdjustmentFactor(records));
+      });
       getProfile().then(setProfile);
     }, []),
   );
 
   const profileReady = isProfileReadyForCalc(profile);
+  const percentNum = parseFloat(percent);
+  const recommendedVolume =
+    profileReady && !Number.isNaN(percentNum) && percentNum > 0
+      ? getRecommendedVolume(
+          profile.weight as number,
+          profile.sex as Sex,
+          percentNum,
+          TARGET_LEVEL,
+          calibrationOffset,
+        ) * volumeAdjustmentFactor
+      : null;
 
   function handleSelectDrinkType(key: string) {
     setDrinkType(key);
@@ -220,6 +239,13 @@ export default function App() {
             placeholder="예: 360"
           />
           {!!errors.volume && <Text style={styles.error}>{errors.volume}</Text>}
+          {recommendedVolume !== null && (
+            <Text style={styles.recommendHint}>
+              권장 음주량 (숙취 {TARGET_LEVEL}단계 기준): 약 {Math.round(recommendedVolume)}ml
+              {volumeAdjustmentFactor < 1 &&
+                ` · 최근 기록 반영 ${Math.round(volumeAdjustmentFactor * 100)}%`}
+            </Text>
+          )}
 
           {/* 음주 시간 */}
           <Text style={styles.label}>음주 시간 (시간)</Text>
@@ -423,6 +449,11 @@ const styles = StyleSheet.create({
   },
   error: {
     color: '#c0392b',
+    fontSize: 12,
+    marginTop: 4,
+  },
+  recommendHint: {
+    color: '#0a7ea4',
     fontSize: 12,
     marginTop: 4,
   },
