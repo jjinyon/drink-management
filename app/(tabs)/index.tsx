@@ -1,4 +1,5 @@
 import { useFocusEffect } from '@react-navigation/native';
+import { Link } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import {
   SafeAreaView,
@@ -24,6 +25,7 @@ import {
   getRecoveryGuide,
   validateInputs,
 } from '@/lib/hangover';
+import { EMPTY_PROFILE, UserProfile, getProfile, isProfileReadyForCalc } from '@/lib/profile';
 import {
   DrinkRecord,
   addRecord,
@@ -61,20 +63,22 @@ export default function App() {
   const [percent, setPercent] = useState('16');
   const [volume, setVolume] = useState('');
   const [hours, setHours] = useState('');
-  const [weight, setWeight] = useState('');
-  const [sex, setSex] = useState<Sex | null>(null);
   const [emptyStomach, setEmptyStomach] = useState<StomachState | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [result, setResult] = useState<Result | null>(null);
   const [calibrationOffset, setCalibrationOffset] = useState(0);
   const [pendingRecord, setPendingRecord] = useState<DrinkRecord | null>(null);
   const [saved, setSaved] = useState(false);
+  const [profile, setProfile] = useState<UserProfile>(EMPTY_PROFILE);
 
   useFocusEffect(
     useCallback(() => {
       getRecords().then((records) => setCalibrationOffset(getCalibrationOffset(records)));
+      getProfile().then(setProfile);
     }, []),
   );
+
+  const profileReady = isProfileReadyForCalc(profile);
 
   function handleSelectDrinkType(key: string) {
     setDrinkType(key);
@@ -87,12 +91,19 @@ export default function App() {
   }
 
   function handleCalculate() {
+    if (!profileReady) {
+      setErrors({ profile: '[내 정보] 탭에서 체중과 성별을 먼저 입력해 주세요.' });
+      setResult(null);
+      setPendingRecord(null);
+      return;
+    }
+
     const values = {
       percent: parseFloat(percent),
       volume: parseFloat(volume),
       hours: parseFloat(hours),
-      weight: parseFloat(weight),
-      sex,
+      weight: profile.weight as number,
+      sex: profile.sex,
       emptyStomach,
     };
 
@@ -156,8 +167,6 @@ export default function App() {
     setPercent('16');
     setVolume('');
     setHours('');
-    setWeight('');
-    setSex(null);
     setEmptyStomach(null);
     setErrors({});
     setResult(null);
@@ -223,24 +232,23 @@ export default function App() {
           />
           {!!errors.hours && <Text style={styles.error}>{errors.hours}</Text>}
 
-          {/* 체중 */}
-          <Text style={styles.label}>체중 (kg)</Text>
-          <TextInput
-            style={styles.input}
-            keyboardType="decimal-pad"
-            value={weight}
-            onChangeText={setWeight}
-            placeholder="예: 65"
-          />
-          {!!errors.weight && <Text style={styles.error}>{errors.weight}</Text>}
-
-          {/* 성별 */}
-          <Text style={styles.label}>성별</Text>
-          <View style={styles.chipRow}>
-            <Chip label="남성" selected={sex === 'male'} onPress={() => setSex('male')} />
-            <Chip label="여성" selected={sex === 'female'} onPress={() => setSex('female')} />
-          </View>
-          {!!errors.sex && <Text style={styles.error}>{errors.sex}</Text>}
+          {/* 내 정보 상태 */}
+          {profileReady ? (
+            <Text style={styles.profileSummary}>
+              내 정보: {profile.sex === 'male' ? '남성' : '여성'} · {profile.weight}kg
+            </Text>
+          ) : (
+            <View style={styles.caution}>
+              <Text style={styles.cautionText}>
+                계산을 위해 체중과 성별 정보가 필요합니다.{' '}
+                <Link href="/profile" style={styles.cautionLink}>
+                  내 정보 탭
+                </Link>
+                에서 먼저 입력해 주세요.
+              </Text>
+            </View>
+          )}
+          {!!errors.profile && <Text style={styles.error}>{errors.profile}</Text>}
 
           {/* 공복 여부 */}
           <Text style={styles.label}>안주 섭취 여부</Text>
@@ -259,7 +267,11 @@ export default function App() {
 
           {/* 버튼 */}
           <View style={styles.actions}>
-            <TouchableOpacity style={[styles.btn, styles.btnPrimary]} onPress={handleCalculate}>
+            <TouchableOpacity
+              style={[styles.btn, styles.btnPrimary, !profileReady && styles.btnDisabled]}
+              onPress={handleCalculate}
+              disabled={!profileReady}
+            >
               <Text style={styles.btnPrimaryText}>계산하기</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.btn} onPress={handleReset}>
@@ -460,6 +472,10 @@ const styles = StyleSheet.create({
     borderColor: '#111',
     marginRight: 0,
   },
+  btnDisabled: {
+    backgroundColor: '#cfcfcf',
+    borderColor: '#cfcfcf',
+  },
   btnText: {
     color: '#2b2b2b',
     fontWeight: '600',
@@ -534,6 +550,16 @@ const styles = StyleSheet.create({
   cautionText: {
     color: '#c0392b',
     fontSize: 13,
+  },
+  cautionLink: {
+    color: '#0a7ea4',
+    fontWeight: '600',
+    textDecorationLine: 'underline',
+  },
+  profileSummary: {
+    marginTop: 12,
+    fontSize: 13,
+    color: '#6b6b6b',
   },
   guide: {
     marginTop: 12,
