@@ -7,20 +7,23 @@ export type StomachState = 'fasting' | 'fed';
 
 export type DrinkTypeKey = 'soju' | 'beer' | 'wine' | 'makgeolli' | 'liquor' | 'highball' | 'custom';
 
+export type VolumeUnit = 'ml' | 'bottle';
+
 export type DrinkType = {
   key: DrinkTypeKey;
   label: string;
   percent: number | null;
+  bottleVolumeMl: number;
 };
 
 export const DRINK_TYPES: DrinkType[] = [
-  { key: 'soju', label: '소주', percent: 16 },
-  { key: 'beer', label: '맥주', percent: 5 },
-  { key: 'wine', label: '와인', percent: 13 },
-  { key: 'makgeolli', label: '막걸리', percent: 6 },
-  { key: 'liquor', label: '양주', percent: 40 },
-  { key: 'highball', label: '하이볼', percent: 8 },
-  { key: 'custom', label: '직접 입력', percent: null },
+  { key: 'soju', label: '소주', percent: 16, bottleVolumeMl: 360 },
+  { key: 'beer', label: '맥주', percent: 5, bottleVolumeMl: 355 },
+  { key: 'wine', label: '와인', percent: 13, bottleVolumeMl: 750 },
+  { key: 'makgeolli', label: '막걸리', percent: 6, bottleVolumeMl: 750 },
+  { key: 'liquor', label: '양주', percent: 40, bottleVolumeMl: 375 },
+  { key: 'highball', label: '하이볼', percent: 8, bottleVolumeMl: 350 },
+  { key: 'custom', label: '직접 입력', percent: null, bottleVolumeMl: 360 },
 ];
 
 export function getDistributionRatio(sex: Sex): number {
@@ -29,6 +32,20 @@ export function getDistributionRatio(sex: Sex): number {
 
 export function calculateAlcoholGrams(volumeMl: number, percent: number): number {
   return volumeMl * (percent / 100) * 0.789;
+}
+
+export function convertVolumeToMl(volume: number, unit: VolumeUnit, bottleVolumeMl: number): number {
+  return unit === 'bottle' ? volume * bottleVolumeMl : volume;
+}
+
+export function calculateAlcoholGramsByUnit(
+  volume: number,
+  percent: number,
+  unit: VolumeUnit,
+  bottleVolumeMl: number,
+): number {
+  const volumeMl = convertVolumeToMl(volume, unit, bottleVolumeMl);
+  return calculateAlcoholGrams(volumeMl, percent);
 }
 
 export function calculateBAC(alcoholGrams: number, weightKg: number, r: number): number {

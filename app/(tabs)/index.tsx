@@ -2,39 +2,40 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Link } from 'expo-router';
 import React, { useCallback, useState } from 'react';
 import {
-  SafeAreaView,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    SafeAreaView,
+    ScrollView,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 
 import {
-  DRINK_TYPES,
-  LEVEL_NAMES,
-  Sex,
-  StomachState,
-  calculateAlcoholGrams,
-  calculateBAC,
-  calculateEliminationTime,
-  classifyHangoverLevel,
-  getDistributionRatio,
-  getRecommendedVolume,
-  getRecoveryGuide,
-  validateInputs,
+    DRINK_TYPES,
+    LEVEL_NAMES,
+    Sex,
+    StomachState,
+    VolumeUnit,
+    calculateAlcoholGramsByUnit,
+    calculateBAC,
+    calculateEliminationTime,
+    classifyHangoverLevel,
+    getDistributionRatio,
+    getRecommendedVolume,
+    getRecoveryGuide,
+    validateInputs,
 } from '@/lib/hangover';
 import { EMPTY_PROFILE, UserProfile, getProfile, isProfileReadyForCalc } from '@/lib/profile';
 import {
-  DrinkRecord,
-  addRecord,
-  applyCalibration,
-  generateId,
-  getCalibrationOffset,
-  getRecords,
-  getVolumeAdjustmentFactor,
+    DrinkRecord,
+    addRecord,
+    applyCalibration,
+    generateId,
+    getCalibrationOffset,
+    getRecords,
+    getVolumeAdjustmentFactor,
 } from '@/lib/records';
 
 const TARGET_LEVEL = 3;
@@ -49,6 +50,34 @@ function Chip({ label, selected, onPress }: { label: string; selected: boolean; 
       <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{label}</Text>
     </TouchableOpacity>
   );
+}
+
+function parseWakeTimeInput(value: string): { hours: number; minutes: number } | null {
+  if (!value.includes(':')) return null;
+
+  const [hourText, minuteText] = value.split(':');
+  const hours = Number.parseInt(hourText, 10);
+  const minutes = Number.parseInt(minuteText, 10);
+
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+
+  return { hours, minutes };
+}
+
+function getHoursUntilWakeup(value: string): number | null {
+  const parsed = parseWakeTimeInput(value);
+  if (!parsed) return null;
+
+  const now = new Date();
+  const target = new Date(now);
+  target.setHours(parsed.hours, parsed.minutes, 0, 0);
+
+  if (target.getTime() <= now.getTime()) {
+    target.setDate(target.getDate() + 1);
+  }
+
+  return (target.getTime() - now.getTime()) / (1000 * 60 * 60);
 }
 
 type Result = {
@@ -66,7 +95,8 @@ export default function App() {
   const [drinkType, setDrinkType] = useState('soju');
   const [percent, setPercent] = useState('16');
   const [volume, setVolume] = useState('');
-  const [hours, setHours] = useState('');
+  const [volumeUnit, setVolumeUnit] = useState<VolumeUnit>('ml');
+  const [wakeTime, setWakeTime] = useState('');
   const [emptyStomach, setEmptyStomach] = useState<StomachState | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [result, setResult] = useState<Result | null>(null);
@@ -88,6 +118,8 @@ export default function App() {
 
   const profileReady = isProfileReadyForCalc(profile);
   const percentNum = parseFloat(percent);
+  const selectedDrink = DRINK_TYPES.find((d) => d.key === drinkType);
+  const bottleVolumeMl = selectedDrink?.bottleVolumeMl ?? 360;
   const recommendedVolume =
     profileReady && !Number.isNaN(percentNum) && percentNum > 0
       ? getRecommendedVolume(
@@ -98,6 +130,10 @@ export default function App() {
           calibrationOffset,
         ) * volumeAdjustmentFactor
       : null;
+  const recommendedDisplayVolume =
+    recommendedVolume !== null && volumeUnit === 'bottle'
+      ? recommendedVolume / bottleVolumeMl
+      : recommendedVolume;
 
   function handleSelectDrinkType(key: string) {
     setDrinkType(key);
@@ -117,16 +153,20 @@ export default function App() {
       return;
     }
 
+    const wakeHours = getHoursUntilWakeup(wakeTime);
     const values = {
       percent: parseFloat(percent),
       volume: parseFloat(volume),
-      hours: parseFloat(hours),
+      hours: wakeHours ?? Number.NaN,
       weight: profile.weight as number,
       sex: profile.sex,
       emptyStomach,
     };
 
     const newErrors = validateInputs(values);
+    if (wakeHours === null) {
+      newErrors.wakeTime = '다음날 기상 시각을 HH:MM 형식으로 입력해 주세요.';
+    }
     setErrors(newErrors);
 
     if (Object.keys(newErrors).length > 0) {
@@ -135,10 +175,16 @@ export default function App() {
       return;
     }
 
-    const alcGrams = calculateAlcoholGrams(values.volume, values.percent);
+    const alcGrams = calculateAlcoholGramsByUnit(
+      values.volume,
+      values.percent,
+      volumeUnit,
+      bottleVolumeMl,
+    );
     const r = getDistributionRatio(values.sex as Sex);
     const bac = calculateBAC(alcGrams, values.weight, r);
-    const elimination = calculateEliminationTime(bac);
+    const bacEliminationTime = calculateEliminationTime(bac);
+    const elimination = Math.max(bacEliminationTime, wakeHours ?? 0);
     const predictedLevel = classifyHangoverLevel(bac);
     const calibratedLevel = applyCalibration(predictedLevel, calibrationOffset);
     const guides = getRecoveryGuide(calibratedLevel);
@@ -162,7 +208,9 @@ export default function App() {
       drinkLabel: found ? found.label : '직접 입력',
       percent: values.percent,
       volume: values.volume,
-      hours: values.hours,
+      volumeUnit,
+      volumeMl: values.volume * (volumeUnit === 'bottle' ? bottleVolumeMl : 1),
+      hours: wakeHours ?? 0,
       weight: values.weight,
       sex: values.sex as Sex,
       emptyStomach: values.emptyStomach,
@@ -185,7 +233,8 @@ export default function App() {
     setDrinkType('soju');
     setPercent('16');
     setVolume('');
-    setHours('');
+    setVolumeUnit('ml');
+    setWakeTime('');
     setEmptyStomach(null);
     setErrors({});
     setResult(null);
@@ -230,33 +279,44 @@ export default function App() {
           {!!errors.percent && <Text style={styles.error}>{errors.percent}</Text>}
 
           {/* 섭취량 */}
-          <Text style={styles.label}>섭취량 (ml)</Text>
+          <Text style={styles.label}>섭취량 입력 방식</Text>
+          <View style={styles.chipRow}>
+            <Chip label="ml" selected={volumeUnit === 'ml'} onPress={() => setVolumeUnit('ml')} />
+            <Chip label="병" selected={volumeUnit === 'bottle'} onPress={() => setVolumeUnit('bottle')} />
+          </View>
+
+          <Text style={styles.label}>{volumeUnit === 'ml' ? '섭취량 (ml)' : '섭취량 (병)'}</Text>
           <TextInput
             style={styles.input}
             keyboardType="decimal-pad"
             value={volume}
             onChangeText={setVolume}
-            placeholder="예: 360"
+            placeholder={volumeUnit === 'ml' ? '예: 360' : '예: 2'}
           />
           {!!errors.volume && <Text style={styles.error}>{errors.volume}</Text>}
           {recommendedVolume !== null && (
             <Text style={styles.recommendHint}>
-              권장 음주량 (숙취 {TARGET_LEVEL}단계 기준): 약 {Math.round(recommendedVolume)}ml
+              권장 음주량 (숙취 {TARGET_LEVEL}단계 기준): 약{' '}
+              {volumeUnit === 'bottle'
+                ? `${Math.round((recommendedDisplayVolume ?? 0) * 10) / 10}병`
+                : `${Math.round(recommendedDisplayVolume ?? 0)}ml`}
               {volumeAdjustmentFactor < 1 &&
                 ` · 최근 기록 반영 ${Math.round(volumeAdjustmentFactor * 100)}%`}
             </Text>
           )}
 
-          {/* 음주 시간 */}
-          <Text style={styles.label}>음주 시간 (시간)</Text>
+          {/* 다음날 기상 시간 */}
+          <Text style={styles.label}>다음날 기상 시각 (HH:MM)</Text>
           <TextInput
             style={styles.input}
-            keyboardType="decimal-pad"
-            value={hours}
-            onChangeText={setHours}
-            placeholder="예: 2"
+            value={wakeTime}
+            onChangeText={setWakeTime}
+            placeholder="예: 08:30"
           />
-          {!!errors.hours && <Text style={styles.error}>{errors.hours}</Text>}
+          {!!errors.wakeTime && <Text style={styles.error}>{errors.wakeTime}</Text>}
+          <Text style={styles.helperText}>
+            술자리를 시작한 뒤 다음날 기상 시각까지의 시간을 기준으로 계산합니다.
+          </Text>
 
           {/* 내 정보 상태 */}
           {profileReady ? (
@@ -327,7 +387,7 @@ export default function App() {
                   <Text style={styles.resultValue}>{result.levelName}</Text>
                 </View>
                 <View style={styles.resultCell}>
-                  <Text style={styles.resultLabel}>예상 알코올 해소 시간</Text>
+                  <Text style={styles.resultLabel}>다음날 기상까지 예상 시간</Text>
                   <Text style={styles.resultValue}>{result.eliminationTime.toFixed(1)} 시간</Text>
                 </View>
               </View>
@@ -454,6 +514,11 @@ const styles = StyleSheet.create({
   },
   recommendHint: {
     color: '#0a7ea4',
+    fontSize: 12,
+    marginTop: 4,
+  },
+  helperText: {
+    color: '#6b6b6b',
     fontSize: 12,
     marginTop: 4,
   },

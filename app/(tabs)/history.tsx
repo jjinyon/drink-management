@@ -1,13 +1,13 @@
 import { useFocusEffect } from '@react-navigation/native';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
-  SafeAreaView,
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    SafeAreaView,
+    ScrollView,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 
 import { LEVEL_NAMES } from '@/lib/hangover';
@@ -97,7 +97,7 @@ function RecordItem({
     <View style={styles.recordItem}>
       <View style={styles.recordHeader}>
         <Text style={styles.recordDrink}>
-          {record.drinkLabel} · {record.volume}ml
+          {record.drinkLabel} · {record.volumeUnit === 'bottle' ? `${record.volume}병` : `${record.volume}ml`}
         </Text>
         <Text style={styles.recordTime}>{formatTime(record.createdAt)}</Text>
       </View>

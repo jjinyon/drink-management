@@ -3,7 +3,7 @@
 // ---------------------------------------------
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { DrinkTypeKey, Sex, StomachState, clampLevel } from './hangover';
+import { DrinkTypeKey, Sex, StomachState, VolumeUnit, clampLevel } from './hangover';
 
 const STORAGE_KEY = 'sulgirok:records:v1';
 
@@ -14,6 +14,8 @@ export type DrinkRecord = {
   drinkLabel: string;
   percent: number;
   volume: number;
+  volumeUnit: VolumeUnit;
+  volumeMl: number;
   hours: number;
   weight: number;
   sex: Sex;
