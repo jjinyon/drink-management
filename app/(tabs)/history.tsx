@@ -11,19 +11,15 @@ import {
 } from 'react-native';
 
 import { LEVEL_NAMES } from '@/lib/hangover';
-import { DrinkRecord, getRecords, setRecordFeedback } from '@/lib/records';
+import { DrinkEntry, DrinkRecord, getNightKey, getRecords, setRecordFeedback, summarizePlaces } from '@/lib/records';
 
 const CHART_MAX_HEIGHT = 100;
 
-function formatDayKey(iso: string) {
-  const d = new Date(iso);
-  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
-}
-
-function formatDayLabel(iso: string) {
-  const d = new Date(iso);
+function formatNightLabel(key: string) {
+  const [year, month, day] = key.split('-').map(Number);
+  const d = new Date(year, month - 1, day);
   const weekday = ['일', '월', '화', '수', '목', '금', '토'][d.getDay()];
-  return `${d.getMonth() + 1}월 ${d.getDate()}일 (${weekday})`;
+  return `${month}월 ${day}일(${weekday}) 밤`;
 }
 
 function formatTime(iso: string) {
@@ -33,9 +29,14 @@ function formatTime(iso: string) {
   return `${hh}:${mm}`;
 }
 
-function formatShortDate(iso: string) {
-  const d = new Date(iso);
-  return `${d.getMonth() + 1}/${d.getDate()}`;
+function formatShortDate(record: DrinkRecord) {
+  const key = record.nightKey ?? getNightKey(new Date(record.createdAt));
+  const [, month, day] = key.split('-');
+  return `${Number(month)}/${Number(day)}`;
+}
+
+function formatVolume(entry: DrinkEntry) {
+  return entry.volumeUnit === 'bottle' ? `${entry.volume}병` : `${entry.volume}ml`;
 }
 
 function Chart({ records }: { records: DrinkRecord[] }) {
@@ -60,24 +61,10 @@ function Chart({ records }: { records: DrinkRecord[] }) {
           {recent.map((r) => (
             <View key={r.id} style={styles.chartCol}>
               <View style={styles.barGroup}>
-                <View
-                  style={[
-                    styles.bar,
-                    styles.barPredicted,
-                    { height: Math.max(4, (r.calibratedLevel / 5) * CHART_MAX_HEIGHT) },
-                  ]}
-                />
-                <View
-                  style={[
-                    styles.bar,
-                    styles.barActual,
-                    {
-                      height: r.actualLevel ? Math.max(4, (r.actualLevel / 5) * CHART_MAX_HEIGHT) : 0,
-                    },
-                  ]}
-                />
+                <View style={[styles.bar, styles.barPredicted, { height: Math.max(4, (r.calibratedLevel / 5) * CHART_MAX_HEIGHT) }]} />
+                <View style={[styles.bar, styles.barActual, { height: r.actualLevel ? Math.max(4, (r.actualLevel / 5) * CHART_MAX_HEIGHT) : 0 }]} />
               </View>
-              <Text style={styles.chartDate}>{formatShortDate(r.createdAt)}</Text>
+              <Text style={styles.chartDate}>{formatShortDate(r)}</Text>
             </View>
           ))}
         </View>
@@ -86,40 +73,41 @@ function Chart({ records }: { records: DrinkRecord[] }) {
   );
 }
 
-function RecordItem({
-  record,
-  onRate,
-}: {
-  record: DrinkRecord;
-  onRate: (id: string, level: number) => void;
-}) {
+function RecordItem({ record, onRate }: { record: DrinkRecord; onRate: (id: string, level: number) => void }) {
+  const summary = summarizePlaces(record);
+  const hasPlaces = !!record.places && record.places.length > 0;
+
   return (
     <View style={styles.recordItem}>
       <View style={styles.recordHeader}>
         <Text style={styles.recordDrink}>
-          {record.drinkLabel} · {record.volume}ml
+          {hasPlaces ? `술자리 ${summary.placeCount}곳 · 술 ${summary.drinkCount}개` : `${record.drinkLabel} · ${record.volumeUnit === 'bottle' ? `${record.volume}병` : `${record.volume}ml`}`}
         </Text>
         <Text style={styles.recordTime}>{formatTime(record.createdAt)}</Text>
       </View>
       <Text style={styles.recordSub}>
-        예측 숙취 {record.calibratedLevel}단계 ({LEVEL_NAMES[record.calibratedLevel]}) · BAC{' '}
-        {record.bac.toFixed(3)}%
+        순수 알코올 {record.alcGrams.toFixed(1)}g · 예상 숙취 {record.calibratedLevel}단계 ({LEVEL_NAMES[record.calibratedLevel]}) · BAC {record.bac.toFixed(3)}%
       </Text>
 
+      {record.places?.map((place) => (
+        <View key={place.id} style={styles.placeBlock}>
+          <Text style={styles.placeName}>{place.name}</Text>
+          {place.drinks.map((drink) => (
+            <Text key={drink.id} style={styles.drinkLine}>
+              {drink.drinkLabel} {formatVolume(drink)} · {drink.percent}% · {drink.alcGrams.toFixed(1)}g
+            </Text>
+          ))}
+        </View>
+      ))}
+
       {typeof record.actualLevel === 'number' ? (
-        <Text style={styles.recordActual}>
-          실제 숙취: {record.actualLevel}단계 ({LEVEL_NAMES[record.actualLevel]})
-        </Text>
+        <Text style={styles.recordActual}>실제 숙취: {record.actualLevel}단계 ({LEVEL_NAMES[record.actualLevel]})</Text>
       ) : (
         <View style={styles.feedbackRow}>
           <Text style={styles.feedbackLabel}>실제 숙취는 어땠나요?</Text>
           <View style={styles.feedbackChips}>
             {[1, 2, 3, 4, 5].map((lvl) => (
-              <TouchableOpacity
-                key={lvl}
-                style={styles.feedbackChip}
-                onPress={() => onRate(record.id, lvl)}
-              >
+              <TouchableOpacity key={lvl} style={styles.feedbackChip} onPress={() => onRate(record.id, lvl)}>
                 <Text style={styles.feedbackChipText}>{lvl}</Text>
               </TouchableOpacity>
             ))}
@@ -153,13 +141,13 @@ export default function HistoryScreen() {
   }
 
   const grouped = useMemo(() => {
-    const byDay = new Map<string, DrinkRecord[]>();
+    const byNight = new Map<string, DrinkRecord[]>();
     [...records].reverse().forEach((r) => {
-      const key = formatDayKey(r.createdAt);
-      if (!byDay.has(key)) byDay.set(key, []);
-      byDay.get(key)!.push(r);
+      const key = r.nightKey ?? getNightKey(new Date(r.createdAt));
+      if (!byNight.has(key)) byNight.set(key, []);
+      byNight.get(key)!.push(r);
     });
-    return Array.from(byDay.values());
+    return Array.from(byNight.entries());
   }, [records]);
 
   return (
@@ -169,20 +157,18 @@ export default function HistoryScreen() {
         <View style={styles.card}>
           <View style={styles.header}>
             <Text style={styles.title}>기록 히스토리</Text>
-            <Text style={styles.subtitle}>날짜별 음주 기록과 숙취 정도를 확인하세요.</Text>
+            <Text style={styles.subtitle}>저녁부터 새벽까지를 한 번의 밤으로 묶어 확인합니다.</Text>
           </View>
 
-          {!loading && records.length === 0 && (
-            <Text style={styles.empty}>아직 저장된 기록이 없어요. 홈에서 계산 후 저장해보세요.</Text>
-          )}
+          {!loading && records.length === 0 && <Text style={styles.empty}>아직 저장된 기록이 없어요. 홈에서 오늘 밤 기록을 저장해 보세요.</Text>}
 
           {records.length > 0 && (
             <>
               <Chart records={records} />
-              {grouped.map((dayRecords) => (
-                <View key={formatDayKey(dayRecords[0].createdAt)} style={styles.daySection}>
-                  <Text style={styles.dayLabel}>{formatDayLabel(dayRecords[0].createdAt)}</Text>
-                  {dayRecords.map((r) => (
+              {grouped.map(([nightKey, nightRecords]) => (
+                <View key={nightKey} style={styles.daySection}>
+                  <Text style={styles.dayLabel}>{formatNightLabel(nightKey)}</Text>
+                  {nightRecords.map((r) => (
                     <RecordItem key={r.id} record={r} onRate={handleRate} />
                   ))}
                 </View>
@@ -196,15 +182,8 @@ export default function HistoryScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#f4f4f2',
-  },
-  scroll: {
-    flexGrow: 1,
-    alignItems: 'center',
-    padding: 20,
-  },
+  safeArea: { flex: 1, backgroundColor: '#f4f4f2' },
+  scroll: { flexGrow: 1, alignItems: 'center', padding: 20 },
   card: {
     width: '100%',
     maxWidth: 480,
@@ -219,162 +198,37 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     elevation: 2,
   },
-  header: {
-    alignItems: 'center',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e6e6e6',
-    borderStyle: 'dashed',
-    paddingBottom: 12,
-    marginBottom: 12,
-  },
-  title: {
-    fontSize: 22,
-    fontWeight: '700',
-    letterSpacing: 1,
-    color: '#2b2b2b',
-  },
-  subtitle: {
-    marginTop: 6,
-    fontSize: 13,
-    color: '#6b6b6b',
-    textAlign: 'center',
-  },
-  empty: {
-    fontSize: 13,
-    color: '#6b6b6b',
-    textAlign: 'center',
-    marginTop: 20,
-  },
-  chartCard: {
-    marginTop: 6,
-    marginBottom: 16,
-    paddingBottom: 4,
-  },
-  chartTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#2b2b2b',
-    marginBottom: 8,
-  },
-  legendRow: {
-    flexDirection: 'row',
-    gap: 14,
-    marginBottom: 10,
-  },
-  legendItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  legendDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  legendText: {
-    fontSize: 11,
-    color: '#6b6b6b',
-  },
-  chartRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 14,
-    paddingBottom: 4,
-  },
-  chartCol: {
-    alignItems: 'center',
-    width: 36,
-  },
-  barGroup: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    height: CHART_MAX_HEIGHT,
-    gap: 4,
-  },
-  bar: {
-    width: 10,
-    borderRadius: 3,
-  },
-  barPredicted: {
-    backgroundColor: '#cfd8dc',
-  },
-  barActual: {
-    backgroundColor: '#0a7ea4',
-  },
-  chartDate: {
-    fontSize: 10,
-    color: '#8a8a8a',
-    marginTop: 6,
-  },
-  daySection: {
-    marginTop: 14,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#eee',
-  },
-  dayLabel: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#2b2b2b',
-    marginBottom: 8,
-  },
-  recordItem: {
-    backgroundColor: '#fafafa',
-    borderWidth: 1,
-    borderColor: '#eee',
-    borderRadius: 6,
-    padding: 12,
-    marginBottom: 10,
-  },
-  recordHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  recordDrink: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#2b2b2b',
-  },
-  recordTime: {
-    fontSize: 12,
-    color: '#8a8a8a',
-  },
-  recordSub: {
-    fontSize: 12,
-    color: '#6b6b6b',
-    marginTop: 4,
-  },
-  recordActual: {
-    fontSize: 12,
-    color: '#0a7ea4',
-    fontWeight: '600',
-    marginTop: 6,
-  },
-  feedbackRow: {
-    marginTop: 8,
-  },
-  feedbackLabel: {
-    fontSize: 12,
-    color: '#2b2b2b',
-    marginBottom: 6,
-  },
-  feedbackChips: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  feedbackChip: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#0a7ea4',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  feedbackChipText: {
-    color: '#0a7ea4',
-    fontWeight: '600',
-    fontSize: 13,
-  },
+  header: { alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#e6e6e6', borderStyle: 'dashed', paddingBottom: 12, marginBottom: 12 },
+  title: { fontSize: 22, fontWeight: '700', letterSpacing: 1, color: '#2b2b2b' },
+  subtitle: { marginTop: 6, fontSize: 13, color: '#6b6b6b', textAlign: 'center' },
+  empty: { fontSize: 13, color: '#6b6b6b', textAlign: 'center', marginTop: 20 },
+  chartCard: { marginTop: 6, marginBottom: 16, paddingBottom: 4 },
+  chartTitle: { fontSize: 15, fontWeight: '700', color: '#2b2b2b', marginBottom: 8 },
+  legendRow: { flexDirection: 'row', gap: 14, marginBottom: 10 },
+  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  legendDot: { width: 8, height: 8, borderRadius: 4 },
+  legendText: { fontSize: 11, color: '#6b6b6b' },
+  chartRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 14, paddingBottom: 4 },
+  chartCol: { alignItems: 'center', width: 36 },
+  barGroup: { flexDirection: 'row', alignItems: 'flex-end', height: CHART_MAX_HEIGHT, gap: 4 },
+  bar: { width: 10, borderRadius: 3 },
+  barPredicted: { backgroundColor: '#cfd8dc' },
+  barActual: { backgroundColor: '#0a7ea4' },
+  chartDate: { fontSize: 10, color: '#8a8a8a', marginTop: 6 },
+  daySection: { marginTop: 14, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#eee' },
+  dayLabel: { fontSize: 14, fontWeight: '700', color: '#2b2b2b', marginBottom: 8 },
+  recordItem: { backgroundColor: '#fafafa', borderWidth: 1, borderColor: '#eee', borderRadius: 6, padding: 12, marginBottom: 10 },
+  recordHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+  recordDrink: { flex: 1, fontSize: 14, fontWeight: '600', color: '#2b2b2b' },
+  recordTime: { fontSize: 12, color: '#8a8a8a' },
+  recordSub: { fontSize: 12, color: '#6b6b6b', marginTop: 4, lineHeight: 18 },
+  placeBlock: { borderTopWidth: 1, borderTopColor: '#eee', paddingTop: 8, marginTop: 8 },
+  placeName: { fontSize: 13, fontWeight: '700', color: '#2b2b2b', marginBottom: 4 },
+  drinkLine: { fontSize: 12, color: '#6b6b6b', lineHeight: 18 },
+  recordActual: { fontSize: 12, color: '#0a7ea4', fontWeight: '600', marginTop: 8 },
+  feedbackRow: { marginTop: 8 },
+  feedbackLabel: { fontSize: 12, color: '#2b2b2b', marginBottom: 6 },
+  feedbackChips: { flexDirection: 'row', gap: 8 },
+  feedbackChip: { width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: '#0a7ea4', alignItems: 'center', justifyContent: 'center' },
+  feedbackChipText: { color: '#0a7ea4', fontWeight: '600', fontSize: 13 },
 });

@@ -1,19 +1,37 @@
-// ---------------------------------------------
-// 음주 기록 저장소 (AsyncStorage 기반) + 피드백 보정 로직
-// ---------------------------------------------
-
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { DrinkTypeKey, Sex, StomachState, clampLevel } from './hangover';
+import { DrinkTypeKey, Sex, StomachState, VolumeUnit, clampLevel } from './hangover';
 
 const STORAGE_KEY = 'sulgirok:records:v1';
 
-export type DrinkRecord = {
+export type DrinkEntry = {
   id: string;
-  createdAt: string; // ISO string
   drinkType: DrinkTypeKey;
   drinkLabel: string;
   percent: number;
   volume: number;
+  volumeUnit: VolumeUnit;
+  volumeMl: number;
+  alcGrams: number;
+};
+
+export type DrinkingPlace = {
+  id: string;
+  name: string;
+  startedAt: string;
+  drinks: DrinkEntry[];
+};
+
+export type DrinkRecord = {
+  id: string;
+  createdAt: string;
+  nightKey?: string;
+  places?: DrinkingPlace[];
+  drinkType: DrinkTypeKey;
+  drinkLabel: string;
+  percent: number;
+  volume: number;
+  volumeUnit: VolumeUnit;
+  volumeMl: number;
   hours: number;
   weight: number;
   sex: Sex;
@@ -53,7 +71,6 @@ export async function setRecordFeedback(id: string, actualLevel: number): Promis
   await saveAll(next);
 }
 
-// 실제 숙취 정도 피드백과 예측치의 평균 오차만큼 다음 예측을 보정한다.
 export function getCalibrationOffset(records: DrinkRecord[]): number {
   const rated = records.filter((r) => typeof r.actualLevel === 'number');
   if (rated.length === 0) return 0;
@@ -63,6 +80,37 @@ export function getCalibrationOffset(records: DrinkRecord[]): number {
 
 export function applyCalibration(predictedLevel: number, offset: number): number {
   return clampLevel(predictedLevel + offset);
+}
+
+export function getVolumeAdjustmentFactor(records: DrinkRecord[], windowSize = 5): number {
+  const rated = records.filter((r) => typeof r.actualLevel === 'number');
+  if (rated.length === 0) return 1;
+  const recent = rated.slice(-windowSize);
+  const avgActual = recent.reduce((acc, r) => acc + (r.actualLevel as number), 0) / recent.length;
+  if (avgActual <= 3) return 1;
+  const reduction = Math.min((avgActual - 3) * 0.15, 0.3);
+  return 1 - reduction;
+}
+
+export function getNightKey(date = new Date()): string {
+  const night = new Date(date);
+  if (night.getHours() < 6) {
+    night.setDate(night.getDate() - 1);
+  }
+  const yyyy = night.getFullYear();
+  const mm = String(night.getMonth() + 1).padStart(2, '0');
+  const dd = String(night.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+export function summarizePlaces(record: DrinkRecord): { placeCount: number; drinkCount: number } {
+  if (!record.places || record.places.length === 0) {
+    return { placeCount: 1, drinkCount: 1 };
+  }
+  return {
+    placeCount: record.places.length,
+    drinkCount: record.places.reduce((sum, place) => sum + place.drinks.length, 0),
+  };
 }
 
 export function generateId(): string {
