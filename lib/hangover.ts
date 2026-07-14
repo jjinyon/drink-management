@@ -1,7 +1,3 @@
-// ---------------------------------------------
-// 음주 기록 계산 공용 로직 (index.tsx, history.tsx 공유)
-// ---------------------------------------------
-
 export type Sex = 'male' | 'female';
 export type StomachState = 'fasting' | 'fed';
 
@@ -68,21 +64,21 @@ export function classifyHangoverLevel(bac: number): number {
 export function getRecoveryGuide(level: number): string[] {
   const guides: Record<number, string[]> = {
     1: ['물을 충분히 마시기', '가벼운 식사하기', '평소 수면 시간 확보하기'],
-    2: ['물이나 이온 음료 마시기', '자극적이지 않은 음식 섭취하기', '충분한 수면 취하기'],
+    2: ['물이나 이온 음료 마시기', '자극적이지 않은 야식 줄이기', '충분한 수면 취하기'],
     3: [
       '수분과 전해질을 천천히 보충하기',
-      '죽, 바나나, 토스트 등 부담이 적은 음식 먹기',
-      '추가 음주를 피하고 충분히 휴식하기',
+      '바나나, 주스처럼 부담이 적은 음식을 먹기',
+      '추가 음주는 피하고 충분히 쉬기',
     ],
     4: [
-      '무리한 운동과 운전을 피하기',
-      '조금씩 자주 수분을 섭취하기',
-      '심한 구토나 어지럼증이 지속되면 주변 사람에게 알리기',
+      '무리한 이동과 운전을 피하기',
+      '조금씩 자주 수분을 보충하기',
+      '심한 구토나 어지러움이 지속되면 주변 사람에게 알리기',
     ],
     5: [
       '혼자 있지 않기',
-      '운전이나 위험한 활동을 절대 하지 않기',
-      '의식 저하, 호흡 이상, 반복적인 구토 등의 증상이 있으면 즉시 119 또는 의료기관의 도움을 받기',
+      '운전이나 위험한 행동을 하지 않기',
+      '의식 저하, 반복적인 구토 등 위험 증상이 있으면 즉시 119 또는 의료기관에 연락하기',
     ],
   };
   return guides[level] || [];
@@ -90,7 +86,7 @@ export function getRecoveryGuide(level: number): string[] {
 
 export const LEVEL_NAMES: Record<number, string> = {
   1: '거의 없음',
-  2: '경미',
+  2: '가벼움',
   3: '보통',
   4: '심함',
   5: '매우 심함',
@@ -100,7 +96,6 @@ export function clampLevel(level: number): number {
   return Math.min(5, Math.max(1, Math.round(level)));
 }
 
-// 각 숙취 단계에서 다음 단계로 넘어가기 직전까지의 BAC 상한 (classifyHangoverLevel의 역함수용)
 const LEVEL_BAC_CEILING: Record<number, number> = {
   1: 0.029,
   2: 0.059,
@@ -109,7 +104,6 @@ const LEVEL_BAC_CEILING: Record<number, number> = {
   5: 0.25,
 };
 
-// 목표 숙취 단계를 넘지 않는 최대 음주량(ml)을 위드마크 공식 역산으로 계산한다.
 export function getRecommendedVolume(
   weightKg: number,
   sex: Sex,
@@ -145,7 +139,7 @@ export function validateInputs(values: InputValues): Record<string, string> {
     errors.volume = '섭취량은 0보다 커야 합니다.';
   }
   if (values.hours === null || Number.isNaN(values.hours) || values.hours <= 0) {
-    errors.hours = '음주 시간은 0보다 커야 합니다.';
+    errors.hours = '시간은 0보다 커야 합니다.';
   }
   if (values.weight === null || Number.isNaN(values.weight) || values.weight <= 0) {
     errors.weight = '체중을 정확히 입력해 주세요.';

@@ -1,15 +1,31 @@
-// ---------------------------------------------
-// 음주 기록 저장소 (AsyncStorage 기반) + 피드백 보정 로직
-// ---------------------------------------------
-
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DrinkTypeKey, Sex, StomachState, VolumeUnit, clampLevel } from './hangover';
 
 const STORAGE_KEY = 'sulgirok:records:v1';
 
+export type DrinkEntry = {
+  id: string;
+  drinkType: DrinkTypeKey;
+  drinkLabel: string;
+  percent: number;
+  volume: number;
+  volumeUnit: VolumeUnit;
+  volumeMl: number;
+  alcGrams: number;
+};
+
+export type DrinkingPlace = {
+  id: string;
+  name: string;
+  startedAt: string;
+  drinks: DrinkEntry[];
+};
+
 export type DrinkRecord = {
   id: string;
-  createdAt: string; // ISO string
+  createdAt: string;
+  nightKey?: string;
+  places?: DrinkingPlace[];
   drinkType: DrinkTypeKey;
   drinkLabel: string;
   percent: number;
@@ -55,7 +71,6 @@ export async function setRecordFeedback(id: string, actualLevel: number): Promis
   await saveAll(next);
 }
 
-// 실제 숙취 정도 피드백과 예측치의 평균 오차만큼 다음 예측을 보정한다.
 export function getCalibrationOffset(records: DrinkRecord[]): number {
   const rated = records.filter((r) => typeof r.actualLevel === 'number');
   if (rated.length === 0) return 0;
@@ -67,8 +82,6 @@ export function applyCalibration(predictedLevel: number, offset: number): number
   return clampLevel(predictedLevel + offset);
 }
 
-// 최근 피드백(실제 숙취 단계)이 "보통(3단계)"보다 높게 이어지면 권장 음주량을 줄이는 배율을 반환한다.
-// 음주를 늘리도록 유도하지는 않으므로 평균이 3 이하일 때는 항상 1(변화 없음)이다.
 export function getVolumeAdjustmentFactor(records: DrinkRecord[], windowSize = 5): number {
   const rated = records.filter((r) => typeof r.actualLevel === 'number');
   if (rated.length === 0) return 1;
@@ -77,6 +90,27 @@ export function getVolumeAdjustmentFactor(records: DrinkRecord[], windowSize = 5
   if (avgActual <= 3) return 1;
   const reduction = Math.min((avgActual - 3) * 0.15, 0.3);
   return 1 - reduction;
+}
+
+export function getNightKey(date = new Date()): string {
+  const night = new Date(date);
+  if (night.getHours() < 6) {
+    night.setDate(night.getDate() - 1);
+  }
+  const yyyy = night.getFullYear();
+  const mm = String(night.getMonth() + 1).padStart(2, '0');
+  const dd = String(night.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+export function summarizePlaces(record: DrinkRecord): { placeCount: number; drinkCount: number } {
+  if (!record.places || record.places.length === 0) {
+    return { placeCount: 1, drinkCount: 1 };
+  }
+  return {
+    placeCount: record.places.length,
+    drinkCount: record.places.reduce((sum, place) => sum + place.drinks.length, 0),
+  };
 }
 
 export function generateId(): string {
