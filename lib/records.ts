@@ -5,6 +5,7 @@ const STORAGE_KEY = 'sulgirok:records:v1';
 
 export type DrinkEntry = {
   id: string;
+  recordedAt?: string;
   drinkType: DrinkTypeKey;
   drinkLabel: string;
   percent: number;

@@ -51,30 +51,23 @@ function Chip({ label, selected, onPress }: { label: string; selected: boolean; 
   );
 }
 
-function parseWakeTimeInput(value: string): { hours: number; minutes: number } | null {
-  if (!value.includes(':')) return null;
-  const [hourText, minuteText] = value.split(':');
-  const hours = Number.parseInt(hourText, 10);
-  const minutes = Number.parseInt(minuteText, 10);
-  if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
-  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
-  return { hours, minutes };
-}
-
-function getHoursUntilWakeup(value: string): number | null {
-  const parsed = parseWakeTimeInput(value);
-  if (!parsed) return null;
-  const now = new Date();
-  const target = new Date(now);
-  target.setHours(parsed.hours, parsed.minutes, 0, 0);
-  if (target.getTime() <= now.getTime()) {
-    target.setDate(target.getDate() + 1);
-  }
-  return (target.getTime() - now.getTime()) / (1000 * 60 * 60);
-}
-
 function formatVolume(entry: DrinkEntry) {
   return entry.volumeUnit === 'bottle' ? `${entry.volume}병` : `${entry.volume}ml`;
+}
+
+const HOUR_MS = 1000 * 60 * 60;
+
+function getDrinkingDurationHours(places: DrinkingPlace[]): number {
+  const timestamps = places
+    .flatMap((place) => place.drinks.map((drink) => drink.recordedAt ?? place.startedAt))
+    .map((value) => new Date(value).getTime())
+    .filter((value) => !Number.isNaN(value));
+
+  if (timestamps.length === 0) return 1;
+
+  const firstRecordedAt = Math.min(...timestamps);
+  const lastRecordedAt = Math.max(...timestamps);
+  return Math.max(1, (lastRecordedAt - firstRecordedAt) / HOUR_MS + 1);
 }
 
 type Result = {
@@ -90,12 +83,17 @@ type Result = {
   placeCount: number;
 };
 
+type Prediction = {
+  result: Result;
+  record: DrinkRecord;
+};
+
 export default function App() {
+  const [screenMode, setScreenMode] = useState<'record' | 'prediction'>('record');
   const [drinkType, setDrinkType] = useState('soju');
   const [percent, setPercent] = useState('16');
   const [volume, setVolume] = useState('');
   const [volumeUnit, setVolumeUnit] = useState<VolumeUnit>('ml');
-  const [wakeTime, setWakeTime] = useState('');
   const [placeName, setPlaceName] = useState('1차');
   const [currentDrinks, setCurrentDrinks] = useState<DrinkEntry[]>([]);
   const [places, setPlaces] = useState<DrinkingPlace[]>([]);
@@ -148,6 +146,105 @@ export default function App() {
   const recommendedDisplayVolume =
     recommendedVolume !== null && volumeUnit === 'bottle' ? recommendedVolume / bottleVolumeMl : recommendedVolume;
 
+  function buildPrediction(nextPlaces: DrinkingPlace[]): Prediction | null {
+    if (!profileReady) {
+      setErrors({ profile: '[내 정보] 탭에서 체중과 성별을 먼저 입력해 주세요.' });
+      return null;
+    }
+
+    const flatDrinks = nextPlaces.flatMap((place) => place.drinks);
+    if (flatDrinks.length === 0) {
+      setErrors({ drinks: '오늘 밤 마신 술을 하나 이상 추가해 주세요.' });
+      return null;
+    }
+
+    const drinkingDurationHours = getDrinkingDurationHours(nextPlaces);
+    const values = {
+      percent: 1,
+      volume: 1,
+      hours: drinkingDurationHours,
+      weight: profile.weight as number,
+      sex: profile.sex,
+      emptyStomach,
+    };
+    const newErrors = validateInputs(values);
+    delete newErrors.percent;
+    delete newErrors.volume;
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      return null;
+    }
+
+    const alcoholGrams = nextPlaces.reduce(
+      (sum, place) => sum + place.drinks.reduce((drinkSum, drink) => drinkSum + drink.alcGrams, 0),
+      0,
+    );
+    const r = getDistributionRatio(values.sex as Sex);
+    const bac = calculateBAC(alcoholGrams, values.weight, r);
+    const bacEliminationTime = calculateEliminationTime(bac);
+    const elimination = Math.max(bacEliminationTime, drinkingDurationHours);
+    const predictedLevel = classifyHangoverLevel(bac);
+    const calibratedLevel = applyCalibration(predictedLevel, calibrationOffset);
+    const guides = getRecoveryGuide(calibratedLevel);
+    const savedPlaces: DrinkingPlace[] = nextPlaces.map((place) => ({
+      ...place,
+      id: place.id === 'draft' ? generateId() : place.id,
+    }));
+    const savedDrinks = savedPlaces.flatMap((place) => place.drinks);
+    const firstDrink = savedDrinks[0];
+
+    return {
+      result: {
+        alcGrams: alcoholGrams,
+        bac,
+        eliminationTime: elimination,
+        predictedLevel,
+        calibratedLevel,
+        levelName: LEVEL_NAMES[calibratedLevel],
+        guides,
+        emptyStomach: values.emptyStomach,
+        drinkCount: savedDrinks.length,
+        placeCount: savedPlaces.length,
+      },
+      record: {
+        id: generateId(),
+        createdAt: new Date().toISOString(),
+        nightKey: getNightKey(),
+        places: savedPlaces,
+        drinkType: firstDrink.drinkType,
+        drinkLabel: `${savedPlaces.length}개 술자리 누적`,
+        percent: firstDrink.percent,
+        volume: savedDrinks.reduce((sum, drink) => sum + drink.volumeMl, 0),
+        volumeUnit: 'ml',
+        volumeMl: savedDrinks.reduce((sum, drink) => sum + drink.volumeMl, 0),
+        hours: drinkingDurationHours,
+        weight: values.weight,
+        sex: values.sex as Sex,
+        emptyStomach: values.emptyStomach,
+        alcGrams: alcoholGrams,
+        bac,
+        eliminationTime: elimination,
+        predictedLevel,
+        calibratedLevel,
+      },
+    };
+  }
+
+  function applyPrediction(nextPlaces: DrinkingPlace[]) {
+    const prediction = buildPrediction(nextPlaces);
+    if (!prediction) {
+      setResult(null);
+      setPendingRecord(null);
+      return;
+    }
+
+    setResult(prediction.result);
+    setPendingRecord(prediction.record);
+    setSaved(false);
+    setErrors({});
+    setScreenMode('prediction');
+  }
+
   function handleSelectDrinkType(key: string) {
     setDrinkType(key);
     const found = DRINK_TYPES.find((d) => d.key === key);
@@ -173,23 +270,26 @@ export default function App() {
     const found = DRINK_TYPES.find((d) => d.key === drinkType);
     const volumeMl = values.volume * (volumeUnit === 'bottle' ? bottleVolumeMl : 1);
     const alcGrams = calculateAlcoholGramsByUnit(values.volume, values.percent, volumeUnit, bottleVolumeMl);
-    setCurrentDrinks((prev) => [
-      ...prev,
-      {
-        id: generateId(),
-        drinkType: found ? found.key : 'custom',
-        drinkLabel: found ? found.label : '직접 입력',
-        percent: values.percent,
-        volume: values.volume,
-        volumeUnit,
-        volumeMl,
-        alcGrams,
-      },
-    ]);
+    const nextDrink: DrinkEntry = {
+      id: generateId(),
+      recordedAt: new Date().toISOString(),
+      drinkType: found ? found.key : 'custom',
+      drinkLabel: found ? found.label : '직접 입력',
+      percent: values.percent,
+      volume: values.volume,
+      volumeUnit,
+      volumeMl,
+      alcGrams,
+    };
+    const nextCurrentDrinks = [...currentDrinks, nextDrink];
+    const trimmedName = placeName.trim() || `${places.length + 1}차`;
+    const nextAllPlaces: DrinkingPlace[] = [
+      ...places,
+      { id: 'draft', name: trimmedName, startedAt: new Date().toISOString(), drinks: nextCurrentDrinks },
+    ];
+    setCurrentDrinks(nextCurrentDrinks);
     setVolume('');
-    setResult(null);
-    setPendingRecord(null);
-    setSaved(false);
+    applyPrediction(nextAllPlaces);
   }
 
   function handleSavePlace() {
@@ -213,93 +313,19 @@ export default function App() {
     setResult(null);
     setPendingRecord(null);
     setSaved(false);
+    setScreenMode('record');
   }
 
   function handleCalculate() {
-    if (!profileReady) {
-      setErrors({ profile: '[내 정보] 탭에서 체중과 성별을 먼저 입력해 주세요.' });
-      setResult(null);
-      setPendingRecord(null);
+    applyPrediction(allPlaces);
+  }
+
+  function handleContinueDrinking() {
+    if (currentDrinks.length > 0) {
+      handleSavePlace();
       return;
     }
-    if (totalDrinkCount === 0) {
-      setErrors({ drinks: '오늘 밤 마신 술을 하나 이상 추가해 주세요.' });
-      setResult(null);
-      setPendingRecord(null);
-      return;
-    }
-
-    const wakeHours = getHoursUntilWakeup(wakeTime);
-    const values = {
-      percent: 1,
-      volume: 1,
-      hours: wakeHours ?? Number.NaN,
-      weight: profile.weight as number,
-      sex: profile.sex,
-      emptyStomach,
-    };
-    const newErrors = validateInputs(values);
-    delete newErrors.percent;
-    delete newErrors.volume;
-    if (wakeHours === null) {
-      newErrors.wakeTime = '다음 기상 시각을 HH:MM 형식으로 입력해 주세요.';
-    }
-    setErrors(newErrors);
-    if (Object.keys(newErrors).length > 0) {
-      setResult(null);
-      setPendingRecord(null);
-      return;
-    }
-
-    const r = getDistributionRatio(values.sex as Sex);
-    const bac = calculateBAC(totalAlcoholGrams, values.weight, r);
-    const bacEliminationTime = calculateEliminationTime(bac);
-    const elimination = Math.max(bacEliminationTime, wakeHours ?? 0);
-    const predictedLevel = classifyHangoverLevel(bac);
-    const calibratedLevel = applyCalibration(predictedLevel, calibrationOffset);
-    const guides = getRecoveryGuide(calibratedLevel);
-    const savedPlaces: DrinkingPlace[] = allPlaces.map((place) => ({
-      ...place,
-      id: place.id === 'draft' ? generateId() : place.id,
-    }));
-    const flatDrinks = savedPlaces.flatMap((place) => place.drinks);
-    const firstDrink = flatDrinks[0];
-
-    setResult({
-      alcGrams: totalAlcoholGrams,
-      bac,
-      eliminationTime: elimination,
-      predictedLevel,
-      calibratedLevel,
-      levelName: LEVEL_NAMES[calibratedLevel],
-      guides,
-      emptyStomach: values.emptyStomach,
-      drinkCount: flatDrinks.length,
-      placeCount: savedPlaces.length,
-    });
-
-    setPendingRecord({
-      id: generateId(),
-      createdAt: new Date().toISOString(),
-      nightKey: getNightKey(),
-      places: savedPlaces,
-      drinkType: firstDrink.drinkType,
-      drinkLabel: `${savedPlaces.length}개 술자리 누적`,
-      percent: firstDrink.percent,
-      volume: flatDrinks.reduce((sum, drink) => sum + drink.volumeMl, 0),
-      volumeUnit: 'ml',
-      volumeMl: flatDrinks.reduce((sum, drink) => sum + drink.volumeMl, 0),
-      hours: wakeHours ?? 0,
-      weight: values.weight,
-      sex: values.sex as Sex,
-      emptyStomach: values.emptyStomach,
-      alcGrams: totalAlcoholGrams,
-      bac,
-      eliminationTime: elimination,
-      predictedLevel,
-      calibratedLevel,
-    });
-    setSaved(false);
+    setScreenMode('record');
   }
 
   async function handleSaveRecord() {
@@ -313,7 +339,6 @@ export default function App() {
     setPercent('16');
     setVolume('');
     setVolumeUnit('ml');
-    setWakeTime('');
     setPlaceName('1차');
     setCurrentDrinks([]);
     setPlaces([]);
@@ -322,6 +347,7 @@ export default function App() {
     setResult(null);
     setPendingRecord(null);
     setSaved(false);
+    setScreenMode('record');
   }
 
   return (
@@ -331,123 +357,127 @@ export default function App() {
         <View style={styles.receipt}>
           <View style={styles.header}>
             <Text style={styles.title}>술기록</Text>
-            <Text style={styles.subtitle}>저녁부터 새벽까지의 술자리를 한 번의 밤으로 묶어 누적합니다.</Text>
-          </View>
-
-          <Text style={styles.label}>술자리</Text>
-          <TextInput style={styles.input} value={placeName} onChangeText={setPlaceName} placeholder="예: 1차, 포차" />
-
-          <Text style={styles.label}>술 종류</Text>
-          <View style={styles.chipRow}>
-            {DRINK_TYPES.map((d) => (
-              <Chip key={d.key} label={d.label} selected={drinkType === d.key} onPress={() => handleSelectDrinkType(d.key)} />
-            ))}
-          </View>
-
-          <Text style={styles.label}>알코올 도수 (%)</Text>
-          <TextInput
-            style={[styles.input, drinkType !== 'custom' && styles.inputDisabled]}
-            keyboardType="decimal-pad"
-            value={percent}
-            onChangeText={setPercent}
-            placeholder="예: 16"
-            editable={drinkType === 'custom'}
-          />
-          {!!errors.percent && <Text style={styles.error}>{errors.percent}</Text>}
-
-          <Text style={styles.label}>섭취량 입력 방식</Text>
-          <View style={styles.chipRow}>
-            <Chip label="ml" selected={volumeUnit === 'ml'} onPress={() => setVolumeUnit('ml')} />
-            <Chip label="병" selected={volumeUnit === 'bottle'} onPress={() => setVolumeUnit('bottle')} />
-          </View>
-
-          <Text style={styles.label}>{volumeUnit === 'ml' ? '섭취량 (ml)' : '섭취량 (병)'}</Text>
-          <TextInput
-            style={styles.input}
-            keyboardType="decimal-pad"
-            value={volume}
-            onChangeText={setVolume}
-            placeholder={volumeUnit === 'ml' ? '예: 360' : '예: 2'}
-          />
-          {!!errors.volume && <Text style={styles.error}>{errors.volume}</Text>}
-          {recommendedVolume !== null && (
-            <Text style={styles.recommendHint}>
-              현재 선택한 술 기준 권장량: {volumeUnit === 'bottle' ? `${Math.round((recommendedDisplayVolume ?? 0) * 10) / 10}병` : `${Math.round(recommendedDisplayVolume ?? 0)}ml`}
-              {volumeAdjustmentFactor < 1 && ` · 최근 숙취 기록 반영 ${Math.round(volumeAdjustmentFactor * 100)}%`}
+            <Text style={styles.subtitle}>
+              {screenMode === 'record' ? '술자리에서 마신 술의 양을 기록하세요.' : '지금까지 마신 술을 기준으로 예측했습니다.'}
             </Text>
-          )}
-
-          <View style={styles.actions}>
-            <TouchableOpacity style={[styles.btn, styles.btnPrimary]} onPress={handleAddDrink}>
-              <Text style={styles.btnPrimaryText}>술 추가</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.btn} onPress={handleSavePlace}>
-              <Text style={styles.btnText}>술자리 저장</Text>
-            </TouchableOpacity>
           </View>
-          {!!errors.drinks && <Text style={styles.error}>{errors.drinks}</Text>}
 
-          {(allPlaces.length > 0 || totalDrinkCount > 0) && (
-            <View style={styles.sessionBox}>
-              <Text style={styles.sessionTitle}>오늘 밤 누적</Text>
-              <Text style={styles.sessionSummary}>
-                술자리 {allPlaces.length}곳 · 술 {totalDrinkCount}개 · 순수 알코올 {totalAlcoholGrams.toFixed(1)}g
-              </Text>
-              {allPlaces.map((place) => (
-                <View key={place.id} style={styles.placeBlock}>
-                  <Text style={styles.placeName}>{place.name}</Text>
-                  {place.drinks.map((drink) => (
-                    <Text key={drink.id} style={styles.drinkLine}>
-                      {drink.drinkLabel} {formatVolume(drink)} · {drink.percent}% · {drink.alcGrams.toFixed(1)}g
-                    </Text>
+          {screenMode === 'record' ? (
+            <View>
+              <Text style={styles.screenLabel}>기록 화면</Text>
+
+              <Text style={styles.label}>술자리</Text>
+              <TextInput style={styles.input} value={placeName} onChangeText={setPlaceName} placeholder="예: 1차, 포차" />
+
+              <Text style={styles.label}>술 종류</Text>
+              <View style={styles.chipRow}>
+                {DRINK_TYPES.map((d) => (
+                  <Chip key={d.key} label={d.label} selected={drinkType === d.key} onPress={() => handleSelectDrinkType(d.key)} />
+                ))}
+              </View>
+
+              <Text style={styles.label}>알코올 도수 (%)</Text>
+              <TextInput
+                style={[styles.input, drinkType !== 'custom' && styles.inputDisabled]}
+                keyboardType="decimal-pad"
+                value={percent}
+                onChangeText={setPercent}
+                placeholder="예: 16"
+                editable={drinkType === 'custom'}
+              />
+              {!!errors.percent && <Text style={styles.error}>{errors.percent}</Text>}
+
+              <Text style={styles.label}>섭취량 입력 방식</Text>
+              <View style={styles.chipRow}>
+                <Chip label="ml" selected={volumeUnit === 'ml'} onPress={() => setVolumeUnit('ml')} />
+                <Chip label="병" selected={volumeUnit === 'bottle'} onPress={() => setVolumeUnit('bottle')} />
+              </View>
+
+              <Text style={styles.label}>{volumeUnit === 'ml' ? '섭취량 (ml)' : '섭취량 (병)'}</Text>
+              <TextInput
+                style={styles.input}
+                keyboardType="decimal-pad"
+                value={volume}
+                onChangeText={setVolume}
+                placeholder={volumeUnit === 'ml' ? '예: 360' : '예: 2'}
+              />
+              {!!errors.volume && <Text style={styles.error}>{errors.volume}</Text>}
+              {recommendedVolume !== null && (
+                <Text style={styles.recommendHint}>
+                  현재 선택한 술 기준 권장량: {volumeUnit === 'bottle' ? `${Math.round((recommendedDisplayVolume ?? 0) * 10) / 10}병` : `${Math.round(recommendedDisplayVolume ?? 0)}ml`}
+                  {volumeAdjustmentFactor < 1 && ` · 최근 숙취 기록 반영 ${Math.round(volumeAdjustmentFactor * 100)}%`}
+                </Text>
+              )}
+
+              {profileReady ? (
+                <Text style={styles.profileSummary}>
+                  내 정보: {profile.sex === 'male' ? '남성' : '여성'} · {profile.weight}kg
+                </Text>
+              ) : (
+                <View style={styles.caution}>
+                  <Text style={styles.cautionText}>
+                    계산을 위해 체중과 성별 정보가 필요합니다. <Link href="/profile" style={styles.cautionLink}>내 정보 탭</Link>에서 먼저 입력해 주세요.
+                  </Text>
+                </View>
+              )}
+              {!!errors.profile && <Text style={styles.error}>{errors.profile}</Text>}
+
+              <Text style={styles.label}>빈속 음주 여부</Text>
+              <View style={styles.chipRow}>
+                <Chip label="빈속" selected={emptyStomach === 'fasting'} onPress={() => setEmptyStomach('fasting')} />
+                <Chip label="식사함" selected={emptyStomach === 'fed'} onPress={() => setEmptyStomach('fed')} />
+              </View>
+
+              <View style={styles.actions}>
+                <TouchableOpacity style={[styles.btn, styles.btnPrimary]} onPress={handleAddDrink}>
+                  <Text style={styles.btnPrimaryText}>기록하고 예측 보기</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.btn} onPress={handleSavePlace}>
+                  <Text style={styles.btnText}>다음 술자리</Text>
+                </TouchableOpacity>
+              </View>
+              {!!errors.drinks && <Text style={styles.error}>{errors.drinks}</Text>}
+
+              {(allPlaces.length > 0 || totalDrinkCount > 0) && (
+                <View style={styles.sessionBox}>
+                  <Text style={styles.sessionTitle}>지금까지 기록</Text>
+                  <Text style={styles.sessionSummary}>
+                    술자리 {allPlaces.length}곳 · 술 {totalDrinkCount}개 · 순수 알코올 {totalAlcoholGrams.toFixed(1)}g
+                  </Text>
+                  {allPlaces.map((place) => (
+                    <View key={place.id} style={styles.placeBlock}>
+                      <Text style={styles.placeName}>{place.name}</Text>
+                      {place.drinks.map((drink) => (
+                        <Text key={drink.id} style={styles.drinkLine}>
+                          {drink.drinkLabel} {formatVolume(drink)} · {drink.percent}% · {drink.alcGrams.toFixed(1)}g
+                        </Text>
+                      ))}
+                    </View>
                   ))}
                 </View>
-              ))}
+              )}
+
+              <Text style={styles.helperText}>시간은 첫 기록부터 마지막 기록까지의 차이에 기본 술자리 1시간을 더해 계산합니다.</Text>
+
+              <View style={styles.actions}>
+                <TouchableOpacity
+                  style={[styles.btn, !profileReady && styles.btnDisabled]}
+                  onPress={handleCalculate}
+                  disabled={!profileReady}
+                >
+                  <Text style={styles.btnText}>누적 예측만 보기</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.btn} onPress={handleReset}>
+                  <Text style={styles.btnText}>초기화</Text>
+                </TouchableOpacity>
+              </View>
             </View>
-          )}
-
-          <Text style={styles.label}>다음 기상 시각 (HH:MM)</Text>
-          <TextInput style={styles.input} value={wakeTime} onChangeText={setWakeTime} placeholder="예: 08:30" />
-          {!!errors.wakeTime && <Text style={styles.error}>{errors.wakeTime}</Text>}
-          <Text style={styles.helperText}>오늘 저녁부터 내일 새벽까지 마신 술을 하나의 밤으로 보고 합산합니다.</Text>
-
-          {profileReady ? (
-            <Text style={styles.profileSummary}>
-              내 정보: {profile.sex === 'male' ? '남성' : '여성'} · {profile.weight}kg
-            </Text>
-          ) : (
-            <View style={styles.caution}>
-              <Text style={styles.cautionText}>
-                계산을 위해 체중과 성별 정보가 필요합니다. <Link href="/profile" style={styles.cautionLink}>내 정보 탭</Link>에서 먼저 입력해 주세요.
-              </Text>
-            </View>
-          )}
-          {!!errors.profile && <Text style={styles.error}>{errors.profile}</Text>}
-
-          <Text style={styles.label}>빈속 음주 여부</Text>
-          <View style={styles.chipRow}>
-            <Chip label="빈속" selected={emptyStomach === 'fasting'} onPress={() => setEmptyStomach('fasting')} />
-            <Chip label="식사함" selected={emptyStomach === 'fed'} onPress={() => setEmptyStomach('fed')} />
-          </View>
-
-          <View style={styles.actions}>
-            <TouchableOpacity
-              style={[styles.btn, styles.btnPrimary, !profileReady && styles.btnDisabled]}
-              onPress={handleCalculate}
-              disabled={!profileReady}
-            >
-              <Text style={styles.btnPrimaryText}>밤 전체 계산</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.btn} onPress={handleReset}>
-              <Text style={styles.btnText}>초기화</Text>
-            </TouchableOpacity>
-          </View>
-
-          {result && (
+          ) : result ? (
             <View style={styles.result}>
-              <Text style={styles.resultTitle}>누적 결과</Text>
+              <Text style={styles.screenLabel}>예측 화면</Text>
+              <Text style={styles.resultTitle}>지금 기준 예상 숙취</Text>
               <Text style={styles.resultLead}>
-                술자리 {result.placeCount}곳에서 {result.drinkCount}개 술을 합산했습니다. 더 마실수록 순수 알코올과 BAC가 누적되어 숙취 단계가 올라갈 수 있습니다.
+                지금까지 술자리 {result.placeCount}곳에서 {result.drinkCount}개 술을 기록했습니다. 이 정도 숙취면 더 마실지, 여기서 멈출지 판단해 보세요.
               </Text>
               <View style={styles.resultGrid}>
                 <View style={styles.resultCell}>
@@ -491,13 +521,29 @@ export default function App() {
                 ))}
               </View>
 
-              <TouchableOpacity style={[styles.btn, styles.btnSave, saved && styles.btnSaved]} onPress={handleSaveRecord} disabled={saved}>
-                <Text style={saved ? styles.btnSavedText : styles.btnPrimaryText}>{saved ? '기록 저장됨' : '오늘 밤 기록 저장하기'}</Text>
-              </TouchableOpacity>
+              <View style={styles.lastCallBox}>
+                <Text style={styles.lastCallTitle}>마지막 술자리인가요?</Text>
+                <Text style={styles.lastCallText}>더 먹어도 되겠다 싶으면 계속 기록하고, 여기서 멈추려면 오늘 밤 기록을 저장하세요.</Text>
+                <View style={styles.actions}>
+                  <TouchableOpacity style={styles.btn} onPress={handleContinueDrinking}>
+                    <Text style={styles.btnText}>더 기록하기</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.btn, styles.btnSave, styles.btnSaveInline, saved && styles.btnSaved]} onPress={handleSaveRecord} disabled={saved}>
+                    <Text style={saved ? styles.btnSavedText : styles.btnPrimaryText}>{saved ? '기록 저장됨' : '마지막, 저장'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
 
               <Text style={styles.safety}>
                 이 결과는 입력값 기반의 단순 추정치입니다. 실제 혈중알코올농도와 숙취 정도는 개인 건강 상태, 음식, 수면, 음주 속도에 따라 달라집니다. 계산 결과와 관계없이 음주 후에는 운전하지 마세요.
               </Text>
+            </View>
+          ) : (
+            <View>
+              <Text style={styles.error}>예측할 기록이 없습니다. 먼저 술을 기록해 주세요.</Text>
+              <TouchableOpacity style={[styles.btn, styles.btnPrimary]} onPress={() => setScreenMode('record')}>
+                <Text style={styles.btnPrimaryText}>기록 화면으로</Text>
+              </TouchableOpacity>
             </View>
           )}
         </View>
@@ -532,6 +578,7 @@ const styles = StyleSheet.create({
   error: { color: '#c0392b', fontSize: 12, marginTop: 4 },
   recommendHint: { color: '#0a7ea4', fontSize: 12, marginTop: 4 },
   helperText: { color: '#6b6b6b', fontSize: 12, marginTop: 4 },
+  screenLabel: { alignSelf: 'flex-start', paddingVertical: 5, paddingHorizontal: 8, borderRadius: 4, backgroundColor: '#f0f7fa', color: '#0a7ea4', fontSize: 12, fontWeight: '700', overflow: 'hidden' },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: '#cfcfcf', backgroundColor: '#fff', marginRight: 6, marginBottom: 6 },
   chipSelected: { backgroundColor: '#111', borderColor: '#111' },
@@ -544,6 +591,7 @@ const styles = StyleSheet.create({
   btnText: { color: '#2b2b2b', fontWeight: '600' },
   btnPrimaryText: { color: '#fff', fontWeight: '600' },
   btnSave: { backgroundColor: '#0a7ea4', borderColor: '#0a7ea4', marginTop: 16, marginRight: 0 },
+  btnSaveInline: { marginTop: 0 },
   btnSaved: { backgroundColor: '#e7f3f6', borderColor: '#0a7ea4' },
   btnSavedText: { color: '#0a7ea4', fontWeight: '600' },
   sessionBox: { marginTop: 16, padding: 12, borderWidth: 1, borderColor: '#e6e6e6', borderRadius: 6, backgroundColor: '#fafafa' },
@@ -567,5 +615,8 @@ const styles = StyleSheet.create({
   guide: { marginTop: 12 },
   guideTitle: { fontWeight: '700', marginBottom: 6 },
   guideItem: { fontSize: 13, color: '#2b2b2b', marginBottom: 4, lineHeight: 20 },
+  lastCallBox: { marginTop: 14, padding: 12, borderWidth: 1, borderColor: '#d7e8ee', borderRadius: 6, backgroundColor: '#f4fbfd' },
+  lastCallTitle: { fontSize: 14, fontWeight: '700', color: '#2b2b2b', marginBottom: 4 },
+  lastCallText: { fontSize: 12, color: '#6b6b6b', lineHeight: 18 },
   safety: { fontSize: 12, color: '#6b6b6b', marginTop: 12, lineHeight: 18 },
 });
